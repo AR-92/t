@@ -2,7 +2,7 @@
 # File listing module for TUI File Manager
 
 # Import configuration
-source "$(dirname "$(dirname "$0")")/config/config.sh"
+source "$(dirname "$0")/../config/config.sh"
 
 # List files/folders (names only, append / for directories)
 list_files() {

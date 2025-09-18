@@ -2,10 +2,10 @@
 # UI operations module for TUI File Manager
 
 # Import configuration and other modules
-source "$(dirname "$(dirname "$0")")/config/config.sh"
-source "$(dirname "$(dirname "$0")")/ui/file_listing.sh"
-source "$(dirname "$(dirname "$0")")/core/file_operations.sh"
-source "$(dirname "$(dirname "$0")")/commands/custom.sh"
+source "$(dirname "$0")/../config/config.sh"
+source "$(dirname "$0")/../ui/file_listing.sh"
+source "$(dirname "$0")/../core/file_operations.sh"
+source "$(dirname "$0")/../commands/custom.sh"
 
 # Context-aware operations based on file type
 get_file_operations() {

@@ -2,7 +2,7 @@
 # Logging utility module for TUI File Manager
 
 # Import configuration
-source "$(dirname "$(dirname "$0")")/config/config.sh"
+source "$(dirname "$0")/../config/config.sh"
 
 # Log function using gum log with styling
 log_action() {
