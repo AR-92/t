@@ -1,0 +1,1085 @@
+#!/usr/bin/env bash
+# -----------------------------
+# Enhanced Flowy Gum TUI File Manager with Power Features
+# -----------------------------
+
+set -e
+
+# Global variables
+current_dir="$(pwd)"
+dir_history=("$current_dir")
+history_index=0
+bookmarks_file="$HOME/.tui_bookmarks"
+clipboard=()
+clipboard_action=""  # "copy" or "cut"
+log_file="$HOME/.tui_logs"
+session_logs=()
+custom_commands_file="$HOME/.tui_custom_commands"
+
+# Ensure bookmarks file exists
+touch "$bookmarks_file"
+
+# Ensure custom commands file exists
+touch "$custom_commands_file"
+
+# Initialize log file
+touch "$log_file"
+
+# Log function using gum log with styling
+log_action() {
+  local message="$1"
+  local timestamp=$(date '+%H:%M:%S')
+  local log_entry="[$timestamp] $message"
+  
+  # Add to session logs
+  session_logs+=("$log_entry")
+  
+  # Use gum log to display the action with styling
+  gum log --level info \
+    --level.foreground=12 \
+    --time.foreground=240 \
+    --prefix.foreground=212 \
+    --message.foreground=255 \
+    --prefix="TUI" \
+    --time="$timestamp" \
+    "$message"
+  
+  # Maintain only last 1000 logs in file
+  if [ $(wc -l < "$log_file") -ge 1000 ]; then
+    # Keep only last 999 lines and add new entry
+    tail -n 999 "$log_file" > "$log_file.tmp" && mv "$log_file.tmp" "$log_file"
+  fi
+  
+  # Append to log file
+  echo "$log_entry" >> "$log_file"
+}
+
+# Show session summary
+show_session_summary() {
+  clear
+  gum style --foreground 12 --bold "Session Summary"
+  echo
+  gum style --foreground 240 "Operations performed in this session:"
+  echo
+  
+  if [ ${#session_logs[@]} -eq 0 ]; then
+    gum style --foreground 240 "No operations performed in this session"
+  else
+    # Show last 10 operations with better styling
+    local start_index=0
+    if [ ${#session_logs[@]} -gt 10 ]; then
+      start_index=$((${#session_logs[@]} - 10))
+    fi
+    
+    for ((i=start_index; i<${#session_logs[@]}; i++)); do
+      # Extract timestamp and message
+      local log_line="${session_logs[i]}"
+      # Handle the case where the log line might contain special characters
+      if [[ "$log_line" == \[*\]* ]]; then
+        local timestamp=$(echo "$log_line" | cut -d'[' -f2 | cut -d']' -f1)
+        local message=$(echo "$log_line" | cut -d']' -f2 | sed 's/^ //')
+        echo -e "\033[38;5;212m[$timestamp]\033[0m \033[38;5;255m$message\033[0m"
+      else
+        # Fallback for lines that don't match the expected format
+        echo -e "\033[38;5;255m$log_line\033[0m"
+      fi
+    done
+  fi
+  
+  echo
+  gum style --foreground 10 --bold "Thank you for using TUI File Manager! 👋"
+  echo
+  gum style --foreground 240 "All actions are logged to: $log_file"
+  echo
+  gum style --foreground 240 "Press any key to exit..."
+  read -rsn1
+}
+
+# List files/folders (names only, append / for directories)
+list_files() {
+  # Add parent directory option at the top (except at filesystem root)
+  if [ "$current_dir" != "/" ]; then
+    echo "📁 .. (Parent Directory)"
+  fi
+  
+  files=()
+  for f in "$current_dir"/*; do
+    # Skip if no files match the pattern
+    [ ! -e "$f" ] && continue
+    [ -d "$f" ] && files+=("📁 $(basename "$f")") || files+=("📄 $(basename "$f")")
+  done
+  # If empty
+  [ ${#files[@]} -eq 0 ] && files=()
+  printf "%s\n" "${files[@]}"
+}
+
+# List bookmarks
+list_bookmarks() {
+  if [ -s "$bookmarks_file" ]; then
+    while IFS= read -r line; do
+      echo "📍 $(basename "$line")"
+    done < "$bookmarks_file"
+  fi
+}
+
+# Add bookmark
+add_bookmark() {
+  # Check if already bookmarked
+  if grep -Fxq "$current_dir" "$bookmarks_file"; then
+    gum style --foreground 212 "Already bookmarked!"
+    log_action "Attempted to bookmark already bookmarked directory: $current_dir"
+  else
+    echo "$current_dir" >> "$bookmarks_file"
+    gum style --foreground 10 "Bookmarked successfully!"
+    log_action "Bookmarked directory: $current_dir"
+  fi
+  sleep 1
+}
+
+# List custom commands
+list_custom_commands() {
+  if [ -s "$custom_commands_file" ]; then
+    while IFS='|' read -r name command; do
+      echo "⚡ $name"
+    done < "$custom_commands_file"
+  fi
+}
+
+# Add custom command
+add_custom_command() {
+  local name=$(gum input --placeholder "Command name (e.g., 'Git Status')")
+  if [ -n "$name" ]; then
+    local command=$(gum input --placeholder "Command to execute (e.g., 'git status')")
+    if [ -n "$command" ]; then
+      # Check if command name already exists
+      if grep -q "^$name|" "$custom_commands_file"; then
+        gum style --foreground 212 "Command '$name' already exists!"
+        if gum confirm "Do you want to replace it?"; then
+          # Remove the existing command
+          grep -v "^$name|" "$custom_commands_file" > "$custom_commands_file.tmp" && mv "$custom_commands_file.tmp" "$custom_commands_file"
+          # Add the new command
+          echo "$name|$command" >> "$custom_commands_file"
+          gum style --foreground 10 "Command '$name' updated successfully!"
+          log_action "Updated custom command: $name"
+        fi
+      else
+        echo "$name|$command" >> "$custom_commands_file"
+        gum style --foreground 10 "Command '$name' added successfully!"
+        log_action "Added custom command: $name"
+      fi
+      sleep 1
+    fi
+  fi
+}
+
+# Rename custom command
+rename_custom_command() {
+  if [ ! -s "$custom_commands_file" ]; then
+    gum style --foreground 212 "No custom commands found!"
+    sleep 1
+    return
+  fi
+  
+  # Create a temporary file with numbered options
+  local temp_file=$(mktemp)
+  local i=1
+  while IFS='|' read -r name command; do
+    echo "$i. $name" >> "$temp_file"
+    i=$((i+1))
+  done < "$custom_commands_file"
+  
+  local selection=$(gum filter --height 10 --placeholder "Select command to rename" < "$temp_file")
+  rm "$temp_file"
+  
+  if [ -n "$selection" ]; then
+    # Extract the command name (everything after the number and period)
+    local old_name=$(echo "$selection" | sed 's/^[0-9]*\. //')
+    
+    # Get the current command
+    local current_command=$(grep "^$old_name|" "$custom_commands_file" | cut -d'|' -f2)
+    
+    if [ -n "$current_command" ]; then
+      local new_name=$(gum input --placeholder "New name for '$old_name'" --value="$old_name")
+      if [ -n "$new_name" ] && [ "$new_name" != "$old_name" ]; then
+        # Remove the old entry
+        grep -v "^$old_name|" "$custom_commands_file" > "$custom_commands_file.tmp" && mv "$custom_commands_file.tmp" "$custom_commands_file"
+        # Add the new entry
+        echo "$new_name|$current_command" >> "$custom_commands_file"
+        gum style --foreground 10 "Command renamed successfully!"
+        log_action "Renamed custom command: $old_name -> $new_name"
+        sleep 1
+      fi
+    fi
+  fi
+}
+
+# Remove custom command
+remove_custom_command() {
+  if [ ! -s "$custom_commands_file" ]; then
+    gum style --foreground 212 "No custom commands found!"
+    sleep 1
+    return
+  fi
+  
+  # Create a temporary file with numbered options
+  local temp_file=$(mktemp)
+  local i=1
+  while IFS='|' read -r name command; do
+    echo "$i. $name" >> "$temp_file"
+    i=$((i+1))
+  done < "$custom_commands_file"
+  
+  local selection=$(gum filter --height 10 --placeholder "Select command to remove" < "$temp_file")
+  rm "$temp_file"
+  
+  if [ -n "$selection" ]; then
+    # Extract the command name (everything after the number and period)
+    local name=$(echo "$selection" | sed 's/^[0-9]*\. //')
+    
+    if gum confirm "Remove command '$name'?"; then
+      # Remove the entry
+      grep -v "^$name|" "$custom_commands_file" > "$custom_commands_file.tmp" && mv "$custom_commands_file.tmp" "$custom_commands_file"
+      gum style --foreground 10 "Command removed successfully!"
+      log_action "Removed custom command: $name"
+      sleep 1
+    fi
+  fi
+}
+
+# Execute custom command
+execute_custom_command() {
+  local name="$1"
+  local command=$(grep "^$name|" "$custom_commands_file" | cut -d'|' -f2)
+  
+  if [ -n "$command" ]; then
+    gum style --foreground 12 --bold "Executing: $name"
+    echo
+    # Replace $FILE or $DIR with the current file/directory
+    command=${command//\$FILE/"$current_dir/$real_name"}
+    command=${command//\$DIR/"$current_dir"}
+    
+    eval "$command" | gum pager
+    log_action "Executed custom command: $name"
+    echo
+    gum style --foreground 240 "Press any key to continue..."
+    read -rsn1
+  fi
+}
+
+# Context-aware operations based on file type
+get_file_operations() {
+  local file_name="$1"
+  local is_dir="$2"
+  
+  if [ "$is_dir" = true ]; then
+    # Operations for directories
+    printf "%s\n" \
+      "📁 Open directory" \
+      "🗑️  Delete directory" \
+      "✏️  Rename directory" \
+      "📄 Create file here" \
+      "📁 Create folder here" \
+      "📋 Copy directory path" \
+      "👀 Preview directory contents" \
+      "📊 Show directory properties" \
+      "⭐ Add to bookmarks"
+  else
+    # Operations for files
+    printf "%s\n" \
+      "✏️  Open/Edit file" \
+      "🗑️  Delete file" \
+      "✏️  Rename file" \
+      "📋 Copy file path" \
+      "👀 Preview file contents" \
+      "📊 Show file properties" \
+      "⭐ Add to bookmarks"
+  fi
+  
+  # Add custom commands
+  if [ -s "$custom_commands_file" ]; then
+    echo "⚡ Custom commands:"
+    list_custom_commands
+  fi
+  
+  # Always add these at the end
+  printf "%s\n" \
+    "➕ Add custom command" \
+    "✏️  Rename custom command" \
+    "❌ Remove custom command" \
+    "🔙 Go back to files" \
+    "❌ Quit"
+}
+
+# Global operations
+get_global_operations() {
+  printf "%s\n" \
+    "📁 Create new folder" \
+    "📄 Create new file" \
+    "📋 Paste clipboard here" \
+    "👀 Preview file" \
+    "📊 Show directory properties" \
+    "⭐ Add current directory to bookmarks" \
+    "🔖 View bookmarks" \
+    "⬅️  Go back (history)" \
+    "➡️  Go forward (history)" \
+    "🔍 Search files by name" \
+    "🔎 Search files by content" \
+    "⚡ Run command" \
+    "🔄 Refresh file list" \
+    "➕ Add custom command" \
+    "✏️  Rename custom command" \
+    "❌ Remove custom command" \
+    "🔙 Go back to files" \
+    "❌ Quit"
+}
+
+# Multi-select operations
+get_multi_operations() {
+  printf "%s\n" \
+    "🗑️  Delete selected" \
+    "📋 Copy selected" \
+    "✂️  Cut selected" \
+    "⭐ Add selected to bookmarks" \
+    "🔙 Go back to files" \
+    "❌ Quit"
+}
+
+# Preview file contents
+preview_file() {
+  local file_path="$1"
+  if [ -d "$file_path" ]; then
+    # For directories, show contents
+    gum style --foreground 12 --bold "Directory contents: $file_path"
+    echo
+    ls -la "$file_path" | gum pager
+    log_action "Previewed directory contents: $file_path"
+  elif [ -f "$file_path" ]; then
+    # For files, show contents
+    if [[ "$file_path" == *.md ]] || [[ "$file_path" == *.txt ]] || [[ "$file_path" == *.sh ]] || [[ "$file_path" == *.py ]] || [[ "$file_path" == *.js ]] || [[ "$file_path" == *.json ]] || [[ "$file_path" == *.yml ]] || [[ "$file_path" == *.yaml ]]; then
+      gum style --foreground 12 --bold "File preview: $file_path"
+      echo
+      cat "$file_path" | gum pager
+      log_action "Previewed file: $file_path"
+    else
+      gum style --foreground 212 "Preview not available for this file type"
+      log_action "Preview not available for file: $file_path"
+      sleep 1
+    fi
+  fi
+}
+
+# Show file/directory properties
+show_properties() {
+  local path="$1"
+  gum style --foreground 12 --bold "Properties: $path"
+  echo
+  stat "$path" | gum pager
+  log_action "Viewed properties: $path"
+}
+
+# Update directory history
+update_history() {
+  local new_dir="$1"
+  # If we're not at the end of history, truncate it
+  if [ $history_index -lt $((${#dir_history[@]} - 1)) ]; then
+    dir_history=("${dir_history[@]:0:$(($history_index + 1))}")
+  fi
+  # Add new directory to history
+  dir_history+=("$new_dir")
+  history_index=$((${#dir_history[@]} - 1))
+  log_action "Navigated to directory: $new_dir"
+}
+
+# Go back in history
+go_back_history() {
+  if [ $history_index -gt 0 ]; then
+    history_index=$(($history_index - 1))
+    current_dir="${dir_history[$history_index]}"
+    log_action "Went back to directory: $current_dir"
+  else
+    gum style --foreground 212 "No more history to go back to"
+    log_action "Attempted to go back but no history available"
+    sleep 1
+  fi
+}
+
+# Go forward in history
+go_forward_history() {
+  if [ $history_index -lt $((${#dir_history[@]} - 1)) ]; then
+    history_index=$(($history_index + 1))
+    current_dir="${dir_history[$history_index]}"
+    log_action "Went forward to directory: $current_dir"
+  else
+    gum style --foreground 212 "No more history to go forward to"
+    log_action "Attempted to go forward but no history available"
+    sleep 1
+  fi
+}
+
+# Search files by name
+search_files_by_name() {
+  local search_term=$(gum input --placeholder "Enter search term")
+  if [ -n "$search_term" ]; then
+    gum style --foreground 12 --bold "Search results for: $search_term"
+    echo
+    # Search in current directory and subdirectories
+    find "$current_dir" -name "*$search_term*" -type f 2>/dev/null | while read -r file; do
+      echo "📄 $file"
+    done | gum pager
+    log_action "Searched files by name: $search_term"
+    echo
+    gum style --foreground 240 "Press any key to continue..."
+    read -rsn1
+  fi
+}
+
+# Search files by content
+search_files_by_content() {
+  local search_term=$(gum input --placeholder "Enter search term")
+  if [ -n "$search_term" ]; then
+    gum style --foreground 12 --bold "Files containing: $search_term"
+    echo
+    # Search in current directory and subdirectories
+    grep -r -l "$search_term" "$current_dir" 2>/dev/null | while read -r file; do
+      echo "📄 $file"
+    done | gum pager
+    log_action "Searched files by content: $search_term"
+    echo
+    gum style --foreground 240 "Press any key to continue..."
+    read -rsn1
+  fi
+}
+
+# Run external command
+run_command() {
+  local cmd=$(gum input --placeholder "Enter command to run")
+  if [ -n "$cmd" ]; then
+    gum style --foreground 12 --bold "Running: $cmd"
+    echo
+    eval "$cmd" | gum pager
+    log_action "Executed command: $cmd"
+    echo
+    gum style --foreground 240 "Press any key to continue..."
+    read -rsn1
+  fi
+}
+
+# Trap to show session summary on exit
+trap show_session_summary EXIT
+
+# Main loop
+while true; do
+  clear
+  # Styled header
+  gum style --foreground 12 --bold "📂 $current_dir"
+  echo
+  
+  # Show clipboard status if not empty
+  if [ ${#clipboard[@]} -gt 0 ]; then
+    gum style --foreground 212 --italic "📋 Clipboard: ${#clipboard[@]} items (${clipboard_action})"
+    echo
+  fi
+  
+  # Show the filter with navigation hints in placeholder
+  # First, check for arrow keys before showing the filter
+  while true; do
+    # Show the filter with navigation hints in placeholder
+    selected=$(list_files | gum filter --height 15 --show-help=false --placeholder "↑/↓ Navigate • Type to filter • Enter to select • ←/→ History • Tab for multi-select • Ctrl+G for global menu")
+    
+    # If filter returns empty, it might be because of Escape key
+    # Let's check for arrow keys
+    if [ -z "$selected" ]; then
+      # Check for arrow keys
+      read -rsn1 key
+      if [[ $key == 
+  
+  # Check for special keys
+  if [ "$selected" = "" ]; then
+    # Check if user pressed Ctrl+G for global menu
+    # Note: gum filter doesn't directly support Ctrl+G, so we'll add it as an option
+    clear
+    gum style --foreground 12 --bold "📂 $current_dir"
+    echo
+    gum style --foreground 212 --bold "Global Operations Menu"
+    echo
+    
+    action=$(get_global_operations | gum filter --height 15 --placeholder "Select global operation")
+    
+    case "$action" in
+      "📁 Create new folder")
+        folder_name=$(gum input --placeholder "Folder name" --value="new-folder")
+        if [ -n "$folder_name" ]; then
+          mkdir -p "$current_dir/$folder_name"
+          gum style --foreground 10 "Folder created successfully"
+          log_action "Created folder: $current_dir/$folder_name"
+          sleep 1
+        fi
+        ;;
+      "📄 Create new file")
+        file_name=$(gum input --placeholder "File name" --value="new-file.txt")
+        if [ -n "$file_name" ]; then
+          touch "$current_dir/$file_name"
+          gum style --foreground 10 "File created successfully"
+          log_action "Created file: $current_dir/$file_name"
+          sleep 1
+        fi
+        ;;
+      "📋 Paste clipboard here")
+        if [ ${#clipboard[@]} -gt 0 ]; then
+          for item in "${clipboard[@]}"; do
+            if [ "$clipboard_action" = "cut" ]; then
+              mv "$item" "$current_dir/"
+              log_action "Moved item: $item to $current_dir/"
+            else
+              cp -r "$item" "$current_dir/"
+              log_action "Copied item: $item to $current_dir/"
+            fi
+          done
+          if [ "$clipboard_action" = "cut" ]; then
+            clipboard=()
+            clipboard_action=""
+            gum style --foreground 10 "Moved items successfully"
+          else
+            gum style --foreground 10 "Copied items successfully"
+          fi
+          sleep 1
+        else
+          gum style --foreground 212 "Clipboard is empty"
+          log_action "Attempted to paste but clipboard is empty"
+          sleep 1
+        fi
+        ;;
+      "👀 Preview file")
+        file_to_preview=$(list_files | gum filter --height 10 --placeholder "Select file to preview")
+        if [ -n "$file_to_preview" ]; then
+          real_name=$(echo "$file_to_preview" | sed 's/^[📁📄 ]*//')
+          preview_file "$current_dir/$real_name"
+        fi
+        ;;
+      "📊 Show directory properties")
+        show_properties "$current_dir"
+        ;;
+      "⭐ Add current directory to bookmarks")
+        add_bookmark
+        ;;
+      "🔖 View bookmarks")
+        clear
+        gum style --foreground 12 --bold "🔖 Bookmarks"
+        echo
+        if [ -s "$bookmarks_file" ]; then
+          bookmark_selected=$(list_bookmarks | gum filter --height 10 --placeholder "Select bookmark to open")
+          if [ -n "$bookmark_selected" ]; then
+            real_name=$(echo "$bookmark_selected" | sed 's/^[📍 ]*//')
+            # Find the full path from bookmarks file
+            bookmark_path=$(grep -F "$real_name" "$bookmarks_file" | head -n1)
+            if [ -n "$bookmark_path" ] && [ -d "$bookmark_path" ]; then
+              current_dir="$bookmark_path"
+              update_history "$current_dir"
+            else
+              gum style --foreground 212 "Bookmark not found or invalid"
+              log_action "Failed to open bookmark: $real_name"
+              sleep 1
+            fi
+          fi
+        else
+          gum style --foreground 240 "No bookmarks yet"
+          log_action "Viewed bookmarks but none found"
+          echo
+          gum style --foreground 240 "Press any key to continue..."
+          read -rsn1
+        fi
+        ;;
+      "⬅️  Go back (history)")
+        go_back_history
+        ;;
+      "➡️  Go forward (history)")
+        go_forward_history
+        ;;
+      "🔍 Search files by name")
+        search_files_by_name
+        ;;
+      "🔎 Search files by content")
+        search_files_by_content
+        ;;
+      "⚡ Run command")
+        run_command
+        ;;
+      "🔄 Refresh file list")
+        # Do nothing, just refresh
+        log_action "Refreshed file list"
+        ;;
+      "➕ Add custom command")
+        add_custom_command
+        ;;
+      "✏️  Rename custom command")
+        rename_custom_command
+        ;;
+      "❌ Remove custom command")
+        remove_custom_command
+        ;;
+      "🔙 Go back to files")
+        # Just go back to file list
+        continue
+        ;;
+      "❌ Quit")
+        log_action "Exiting TUI File Manager"
+        exit 0
+        ;;
+    esac
+    continue
+  fi
+
+  # Check if user selected parent directory
+  if [ "$selected" = "📁 .. (Parent Directory)" ]; then
+    # Go to parent directory
+    current_dir=$(dirname "$current_dir")
+    update_history "$current_dir"
+    continue
+  fi
+
+  # Check for multi-select (using a special marker)
+  # Since gum filter doesn't support multi-select natively, we'll simulate it
+  # by allowing users to select "Multi-select mode" as an option
+  
+  # For now, let's check if user wants to enter multi-select mode
+  if [ "$selected" = "Multi-select mode" ]; then
+    # This would be implemented with a custom solution
+    # For now, we'll just show a message
+    gum style --foreground 212 "Multi-select mode not yet implemented"
+    log_action "Attempted to use multi-select mode"
+    sleep 1
+    continue
+  fi
+
+  # Check if user selected parent directory (in case it's the only option)
+  if [ "$selected" = "📁 .. (Parent Directory)" ]; then
+    # Go to parent directory
+    current_dir=$(dirname "$current_dir")
+    update_history "$current_dir"
+    continue
+  fi
+
+  # Remove emoji prefix to get real name
+  real_name=$(echo "$selected" | sed 's/^[📁📄 ]*//')
+  
+  # Determine if selected item is directory
+  is_directory=false
+  if [ -d "$current_dir/$real_name" ]; then
+    is_directory=true
+  fi
+  
+  # Get context-aware operations
+  operations=$(get_file_operations "$real_name" "$is_directory")
+  
+  # Show operations using filter for consistency
+  clear
+  gum style --foreground 12 --bold "📂 $current_dir"
+  echo
+  gum style --foreground 212 --bold "Selected: $real_name"
+  echo
+  
+  # Show quick action keys as help text
+  gum style --foreground 240 "Quick Keys: O=Open, D=Delete, R=Rename, C=Copy, V=Cut, P=Preview, B=Back, Q=Quit"
+  echo
+  
+  # Use filter for operations instead of choose for consistency
+  action=$(echo "$operations" | gum filter --height 15 --placeholder "Select an operation or press key shortcut")
+  
+  # Handle the action
+  case "$action" in
+    "📁 Open directory")
+      current_dir="$current_dir/$real_name"
+      update_history "$current_dir"
+      ;;
+    "✏️  Open/Edit file")
+      nvim "$current_dir/$real_name"
+      log_action "Opened file in editor: $current_dir/$real_name"
+      ;;
+    "🗑️  Delete "*)
+      if gum confirm "Delete '$real_name'?"; then
+        if [ -d "$current_dir/$real_name" ]; then
+          rm -rf "$current_dir/$real_name"
+          log_action "Deleted directory: $current_dir/$real_name"
+        else
+          rm "$current_dir/$real_name"
+          log_action "Deleted file: $current_dir/$real_name"
+        fi
+        gum style --foreground 10 "Deleted successfully"
+        sleep 1
+      fi
+      ;;
+    "✏️  Rename "*)
+      new_name=$(gum input --placeholder "New name" --value="$real_name")
+      if [ -n "$new_name" ] && [ "$new_name" != "$real_name" ]; then
+        mv "$current_dir/$real_name" "$current_dir/$new_name"
+        gum style --foreground 10 "Renamed successfully"
+        log_action "Renamed '$real_name' to '$new_name'"
+        sleep 1
+      fi
+      ;;
+    "📄 Create "*)
+      file_name=$(gum input --placeholder "File name" --value="new-file.txt")
+      if [ -n "$file_name" ]; then
+        touch "$current_dir/$file_name"
+        gum style --foreground 10 "File created successfully"
+        log_action "Created file: $current_dir/$file_name"
+        sleep 1
+      fi
+      ;;
+    "📁 Create "*)
+      folder_name=$(gum input --placeholder "Folder name" --value="new-folder")
+      if [ -n "$folder_name" ]; then
+        mkdir -p "$current_dir/$folder_name"
+        gum style --foreground 10 "Folder created successfully"
+        log_action "Created folder: $current_dir/$folder_name"
+        sleep 1
+      fi
+      ;;
+    "📋 Copy "*)
+      clipboard=("$current_dir/$real_name")
+      clipboard_action="copy"
+      gum style --foreground 10 "Copied to clipboard"
+      log_action "Copied to clipboard: $current_dir/$real_name"
+      sleep 1
+      ;;
+    "👀 Preview"*)
+      preview_file "$current_dir/$real_name"
+      ;;
+    "📊 Show "*)
+      show_properties "$current_dir/$real_name"
+      ;;
+    "⭐ Add to bookmarks")
+      # For single files/dirs, we'll bookmark the parent directory
+      if gum confirm "Bookmark current directory '$current_dir'?"; then
+        add_bookmark
+      fi
+      ;;
+    "➕ Add custom command")
+      add_custom_command
+      ;;
+    "✏️  Rename custom command")
+      rename_custom_command
+      ;;
+    "❌ Remove custom command")
+      remove_custom_command
+      ;;
+    "🔙 Go back to files")
+      # Just go back to file list
+      continue
+      ;;
+    "❌ Quit")
+      log_action "Exiting TUI File Manager"
+      exit 0
+      ;;
+    "⚡ "*)
+      # Handle custom commands
+      custom_name=$(echo "$action" | sed 's/^[⚡ ]*//')
+      execute_custom_command "$custom_name"
+      ;;
+  esac
+done\e' ]]; then
+        read -rsn2 key
+        case $key in
+          '[D') 
+            # Left arrow - go back in history
+            go_back_history
+            continue
+            ;;
+          '[C') 
+            # Right arrow - go forward in history
+            go_forward_history
+            continue
+            ;;
+        esac
+      fi
+    fi
+    
+    # Break out of the loop if we have a selection
+    break
+  done
+  
+  # Check for special keys
+  if [ "$selected" = "" ]; then
+    # Check if user pressed Ctrl+G for global menu
+    # Note: gum filter doesn't directly support Ctrl+G, so we'll add it as an option
+    clear
+    gum style --foreground 12 --bold "📂 $current_dir"
+    echo
+    gum style --foreground 212 --bold "Global Operations Menu"
+    echo
+    
+    action=$(get_global_operations | gum filter --height 15 --placeholder "Select global operation")
+    
+    case "$action" in
+      "📁 Create new folder")
+        folder_name=$(gum input --placeholder "Folder name" --value="new-folder")
+        if [ -n "$folder_name" ]; then
+          mkdir -p "$current_dir/$folder_name"
+          gum style --foreground 10 "Folder created successfully"
+          log_action "Created folder: $current_dir/$folder_name"
+          sleep 1
+        fi
+        ;;
+      "📄 Create new file")
+        file_name=$(gum input --placeholder "File name" --value="new-file.txt")
+        if [ -n "$file_name" ]; then
+          touch "$current_dir/$file_name"
+          gum style --foreground 10 "File created successfully"
+          log_action "Created file: $current_dir/$file_name"
+          sleep 1
+        fi
+        ;;
+      "📋 Paste clipboard here")
+        if [ ${#clipboard[@]} -gt 0 ]; then
+          for item in "${clipboard[@]}"; do
+            if [ "$clipboard_action" = "cut" ]; then
+              mv "$item" "$current_dir/"
+              log_action "Moved item: $item to $current_dir/"
+            else
+              cp -r "$item" "$current_dir/"
+              log_action "Copied item: $item to $current_dir/"
+            fi
+          done
+          if [ "$clipboard_action" = "cut" ]; then
+            clipboard=()
+            clipboard_action=""
+            gum style --foreground 10 "Moved items successfully"
+          else
+            gum style --foreground 10 "Copied items successfully"
+          fi
+          sleep 1
+        else
+          gum style --foreground 212 "Clipboard is empty"
+          log_action "Attempted to paste but clipboard is empty"
+          sleep 1
+        fi
+        ;;
+      "👀 Preview file")
+        file_to_preview=$(list_files | gum filter --height 10 --placeholder "Select file to preview")
+        if [ -n "$file_to_preview" ]; then
+          real_name=$(echo "$file_to_preview" | sed 's/^[📁📄 ]*//')
+          preview_file "$current_dir/$real_name"
+        fi
+        ;;
+      "📊 Show directory properties")
+        show_properties "$current_dir"
+        ;;
+      "⭐ Add current directory to bookmarks")
+        add_bookmark
+        ;;
+      "🔖 View bookmarks")
+        clear
+        gum style --foreground 12 --bold "🔖 Bookmarks"
+        echo
+        if [ -s "$bookmarks_file" ]; then
+          bookmark_selected=$(list_bookmarks | gum filter --height 10 --placeholder "Select bookmark to open")
+          if [ -n "$bookmark_selected" ]; then
+            real_name=$(echo "$bookmark_selected" | sed 's/^[📍 ]*//')
+            # Find the full path from bookmarks file
+            bookmark_path=$(grep -F "$real_name" "$bookmarks_file" | head -n1)
+            if [ -n "$bookmark_path" ] && [ -d "$bookmark_path" ]; then
+              current_dir="$bookmark_path"
+              update_history "$current_dir"
+            else
+              gum style --foreground 212 "Bookmark not found or invalid"
+              log_action "Failed to open bookmark: $real_name"
+              sleep 1
+            fi
+          fi
+        else
+          gum style --foreground 240 "No bookmarks yet"
+          log_action "Viewed bookmarks but none found"
+          echo
+          gum style --foreground 240 "Press any key to continue..."
+          read -rsn1
+        fi
+        ;;
+      "⬅️  Go back (history)")
+        go_back_history
+        ;;
+      "➡️  Go forward (history)")
+        go_forward_history
+        ;;
+      "🔍 Search files by name")
+        search_files_by_name
+        ;;
+      "🔎 Search files by content")
+        search_files_by_content
+        ;;
+      "⚡ Run command")
+        run_command
+        ;;
+      "🔄 Refresh file list")
+        # Do nothing, just refresh
+        log_action "Refreshed file list"
+        ;;
+      "➕ Add custom command")
+        add_custom_command
+        ;;
+      "✏️  Rename custom command")
+        rename_custom_command
+        ;;
+      "❌ Remove custom command")
+        remove_custom_command
+        ;;
+      "🔙 Go back to files")
+        # Just go back to file list
+        continue
+        ;;
+      "❌ Quit")
+        log_action "Exiting TUI File Manager"
+        exit 0
+        ;;
+    esac
+    continue
+  fi
+
+  # Check if user selected parent directory
+  if [ "$selected" = "📁 .. (Parent Directory)" ]; then
+    # Go to parent directory
+    current_dir=$(dirname "$current_dir")
+    update_history "$current_dir"
+    continue
+  fi
+
+  # Check for multi-select (using a special marker)
+  # Since gum filter doesn't support multi-select natively, we'll simulate it
+  # by allowing users to select "Multi-select mode" as an option
+  
+  # For now, let's check if user wants to enter multi-select mode
+  if [ "$selected" = "Multi-select mode" ]; then
+    # This would be implemented with a custom solution
+    # For now, we'll just show a message
+    gum style --foreground 212 "Multi-select mode not yet implemented"
+    log_action "Attempted to use multi-select mode"
+    sleep 1
+    continue
+  fi
+
+  # Check if user selected parent directory (in case it's the only option)
+  if [ "$selected" = "📁 .. (Parent Directory)" ]; then
+    # Go to parent directory
+    current_dir=$(dirname "$current_dir")
+    update_history "$current_dir"
+    continue
+  fi
+
+  # Remove emoji prefix to get real name
+  real_name=$(echo "$selected" | sed 's/^[📁📄 ]*//')
+  
+  # Determine if selected item is directory
+  is_directory=false
+  if [ -d "$current_dir/$real_name" ]; then
+    is_directory=true
+  fi
+  
+  # Get context-aware operations
+  operations=$(get_file_operations "$real_name" "$is_directory")
+  
+  # Show operations using filter for consistency
+  clear
+  gum style --foreground 12 --bold "📂 $current_dir"
+  echo
+  gum style --foreground 212 --bold "Selected: $real_name"
+  echo
+  
+  # Show quick action keys as help text
+  gum style --foreground 240 "Quick Keys: O=Open, D=Delete, R=Rename, C=Copy, V=Cut, P=Preview, B=Back, Q=Quit"
+  echo
+  
+  # Use filter for operations instead of choose for consistency
+  action=$(echo "$operations" | gum filter --height 15 --placeholder "Select an operation or press key shortcut")
+  
+  # Handle the action
+  case "$action" in
+    "📁 Open directory")
+      current_dir="$current_dir/$real_name"
+      update_history "$current_dir"
+      ;;
+    "✏️  Open/Edit file")
+      nvim "$current_dir/$real_name"
+      log_action "Opened file in editor: $current_dir/$real_name"
+      ;;
+    "🗑️  Delete "*)
+      if gum confirm "Delete '$real_name'?"; then
+        if [ -d "$current_dir/$real_name" ]; then
+          rm -rf "$current_dir/$real_name"
+          log_action "Deleted directory: $current_dir/$real_name"
+        else
+          rm "$current_dir/$real_name"
+          log_action "Deleted file: $current_dir/$real_name"
+        fi
+        gum style --foreground 10 "Deleted successfully"
+        sleep 1
+      fi
+      ;;
+    "✏️  Rename "*)
+      new_name=$(gum input --placeholder "New name" --value="$real_name")
+      if [ -n "$new_name" ] && [ "$new_name" != "$real_name" ]; then
+        mv "$current_dir/$real_name" "$current_dir/$new_name"
+        gum style --foreground 10 "Renamed successfully"
+        log_action "Renamed '$real_name' to '$new_name'"
+        sleep 1
+      fi
+      ;;
+    "📄 Create "*)
+      file_name=$(gum input --placeholder "File name" --value="new-file.txt")
+      if [ -n "$file_name" ]; then
+        touch "$current_dir/$file_name"
+        gum style --foreground 10 "File created successfully"
+        log_action "Created file: $current_dir/$file_name"
+        sleep 1
+      fi
+      ;;
+    "📁 Create "*)
+      folder_name=$(gum input --placeholder "Folder name" --value="new-folder")
+      if [ -n "$folder_name" ]; then
+        mkdir -p "$current_dir/$folder_name"
+        gum style --foreground 10 "Folder created successfully"
+        log_action "Created folder: $current_dir/$folder_name"
+        sleep 1
+      fi
+      ;;
+    "📋 Copy "*)
+      clipboard=("$current_dir/$real_name")
+      clipboard_action="copy"
+      gum style --foreground 10 "Copied to clipboard"
+      log_action "Copied to clipboard: $current_dir/$real_name"
+      sleep 1
+      ;;
+    "👀 Preview"*)
+      preview_file "$current_dir/$real_name"
+      ;;
+    "📊 Show "*)
+      show_properties "$current_dir/$real_name"
+      ;;
+    "⭐ Add to bookmarks")
+      # For single files/dirs, we'll bookmark the parent directory
+      if gum confirm "Bookmark current directory '$current_dir'?"; then
+        add_bookmark
+      fi
+      ;;
+    "➕ Add custom command")
+      add_custom_command
+      ;;
+    "✏️  Rename custom command")
+      rename_custom_command
+      ;;
+    "❌ Remove custom command")
+      remove_custom_command
+      ;;
+    "🔙 Go back to files")
+      # Just go back to file list
+      continue
+      ;;
+    "❌ Quit")
+      log_action "Exiting TUI File Manager"
+      exit 0
+      ;;
+    "⚡ "*)
+      # Handle custom commands
+      custom_name=$(echo "$action" | sed 's/^[⚡ ]*//')
+      execute_custom_command "$custom_name"
+      ;;
+  esac
+done
