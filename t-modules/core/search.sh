@@ -2,8 +2,8 @@
 # Search module for TUI File Manager
 
 # Import configuration and logging
-source "$(dirname "$0")/../config/config.sh"
-source "$(dirname "$0")/../utils/logging.sh"
+source "$(dirname "$(dirname "$0")")/config/config.sh"
+source "$(dirname "$(dirname "$0")")/utils/logging.sh"
 
 # Search files by name
 search_files_by_name() {

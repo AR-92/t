@@ -2,8 +2,8 @@
 # Custom commands module for TUI File Manager
 
 # Import configuration and logging
-source "$(dirname "$0")/../config/config.sh"
-source "$(dirname "$0")/../utils/logging.sh"
+source "$(dirname "$(dirname "$0")")/config/config.sh"
+source "$(dirname "$(dirname "$0")")/utils/logging.sh"
 
 # Add custom command
 add_custom_command() {
