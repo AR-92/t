@@ -1,4 +1,4 @@
-# Enhanced Flowy Gum TUI File Manager
+# T - Terminal File Manager
 
 A powerful terminal-based file manager with intuitive keyboard navigation and visual styling using Gum.
 
@@ -12,6 +12,7 @@ A powerful terminal-based file manager with intuitive keyboard navigation and vi
 - **History**: Navigate through your directory browsing history
 - **Search**: Find files by name or content
 - **Logging**: All actions are logged for review
+- **Modular Design**: Easy to maintain and extend
 
 ## Installation
 
@@ -21,8 +22,8 @@ A powerful terminal-based file manager with intuitive keyboard navigation and vi
 
 2. Clone and install:
    ```bash
-   git clone <repository-url>
-   cd <repository-directory>
+   git clone https://github.com/AR-92/t.git
+   cd t
    sudo cp t /usr/local/bin/t
    ```
 
@@ -33,6 +34,16 @@ t        # Start the TUI file manager
 t -h     # Show help page
 t -v     # Show version information
 ```
+
+## Modular Structure
+
+This project uses a modular design for easier maintenance:
+
+- `t-modules/config/` - Configuration and global variables
+- `t-modules/core/` - Core functionality (navigation, file operations, search)
+- `t-modules/ui/` - User interface components (file listing, operations menus)
+- `t-modules/utils/` - Utility functions (logging)
+- `t-modules/commands/` - Command execution (external and custom commands)
 
 ## Dependencies
 
